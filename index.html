@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Hapus Watermark</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #000000);
+  }
+  h2.sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+  .hint {
+    font-size: 13px;
+    color: var(--tg-theme-hint-color, #999999);
+    margin: 0 0 12px;
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f2);
+    touch-action: none;
+    user-select: none;
+    margin-bottom: 16px;
+  }
+  .stage img {
+    display: block;
+    width: 100%;
+    height: auto;
+    pointer-events: none;
+    -webkit-user-drag: none;
+  }
+  .box {
+    position: absolute;
+    border: 2px solid #378ADD;
+    background: rgba(55,138,221,0.18);
+    display: none;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .field label {
+    font-size: 12px;
+    color: var(--tg-theme-hint-color, #999999);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .field input {
+    width: 100%;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid var(--tg-theme-hint-color, #cccccc);
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #000000);
+    font-size: 14px;
+  }
+  .err {
+    font-size: 13px;
+    color: #e05252;
+    margin: 0 0 12px;
+    display: none;
+  }
+  button.primary {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--tg-theme-button-color, #378ADD);
+    color: var(--tg-theme-button-text-color, #ffffff);
+    font-size: 16px;
+    font-weight: 600;
+  }
+  button.primary:disabled { opacity: 0.5; }
+  .missing {
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--tg-theme-hint-color, #999999);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<h2 class="sr-only">Alat pilih area watermark buat video yang kamu upload</h2>
+
+<div id="app">
+  <p class="hint">Tarik kotak di atas area watermark, rapikan pakai angka kalau perlu.</p>
+  <div class="stage" id="stage">
+    <img id="frame" alt="" />
+    <div class="box" id="box"></div>
+  </div>
+  <div class="grid">
+    <div class="field"><label for="x">X</label><input type="number" id="x" min="0" value="0"></div>
+    <div class="field"><label for="y">Y</label><input type="number" id="y" min="0" value="0"></div>
+    <div class="field"><label for="w">W</label><input type="number" id="w" min="1" value="0"></div>
+    <div class="field"><label for="h">H</label><input type="number" id="h" min="1" value="0"></div>
+    <div class="field"><label for="pad">Padding</label><input type="number" id="pad" min="0" value="6"></div>
+    <div class="field"><label for="blur">Blur (a:b)</label><input type="text" id="blur" value="8:2"></div>
+  </div>
+  <p class="err" id="err"></p>
+  <button class="primary" id="submit" disabled>🧹 Hapus Watermark</button>
+</div>
+
+<script>
+(function(){
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  var params = new URLSearchParams(window.location.search);
+  var imgUrl = params.get('img');
+  var sid = params.get('sid');
+
+  var app = document.getElementById('app');
+  var stage = document.getElementById('stage');
+  var frameImg = document.getElementById('frame');
+  var boxEl = document.getElementById('box');
+  var xI = document.getElementById('x');
+  var yI = document.getElementById('y');
+  var wI = document.getElementById('w');
+  var hI = document.getElementById('h');
+  var padI = document.getElementById('pad');
+  var blurI = document.getElementById('blur');
+  var errEl = document.getElementById('err');
+  var submitBtn = document.getElementById('submit');
+
+  function showErr(msg){ errEl.textContent = msg; errEl.style.display = 'block'; }
+  function clearErr(){ errEl.style.display = 'none'; }
+
+  if (!imgUrl || !sid) {
+    app.innerHTML = '<div class="missing">Sesi tidak valid. Kembali ke chat dan mulai ulang dari bot.</div>';
+    return;
+  }
+  frameImg.src = imgUrl;
+
+  var naturalW = 0, naturalH = 0;
+  var rect = {x:0,y:0,w:0,h:0};
+  var dragging = false;
+  var startPos = null;
+
+  frameImg.onload = function(){
+    naturalW = frameImg.naturalWidth;
+    naturalH = frameImg.naturalHeight;
+    submitBtn.disabled = false;
+  };
+  frameImg.onerror = function(){
+    app.innerHTML = '<div class="missing">Link gambar sudah kadaluarsa. Kembali ke chat dan mulai ulang dari bot.</div>';
+  };
+
+  function displayScale(){
+    var r = stage.getBoundingClientRect();
+    return r.width / naturalW;
+  }
+
+  function drawBox(){
+    if (rect.w <= 0 || rect.h <= 0) { boxEl.style.display = 'none'; return; }
+    var s = displayScale();
+    boxEl.style.display = 'block';
+    boxEl.style.left = (rect.x * s) + 'px';
+    boxEl.style.top = (rect.y * s) + 'px';
+    boxEl.style.width = (rect.w * s) + 'px';
+    boxEl.style.height = (rect.h * s) + 'px';
+  }
+
+  function updateInputs(){
+    xI.value = Math.round(rect.x);
+    yI.value = Math.round(rect.y);
+    wI.value = Math.round(rect.w);
+    hI.value = Math.round(rect.h);
+  }
+
+  function updateRectFromInputs(){
+    if (!naturalW || !naturalH) return;
+    rect.x = Math.max(0, Math.min(naturalW, Number(xI.value) || 0));
+    rect.y = Math.max(0, Math.min(naturalH, Number(yI.value) || 0));
+    rect.w = Math.max(1, Number(wI.value) || 1);
+    rect.h = Math.max(1, Number(hI.value) || 1);
+    drawBox();
+  }
+
+  function getPos(e){
+    var r = stage.getBoundingClientRect();
+    var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    var s = displayScale();
+    return { x: (clientX - r.left) / s, y: (clientY - r.top) / s };
+  }
+
+  stage.addEventListener('pointerdown', function(e){
+    if (!naturalW) return;
+    dragging = true;
+    clearErr();
+    var p = getPos(e);
+    startPos = p;
+    rect = { x: p.x, y: p.y, w: 0, h: 0 };
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', function(e){
+    if (!dragging) return;
+    var p = getPos(e);
+    rect.x = Math.max(0, Math.min(startPos.x, p.x));
+    rect.y = Math.max(0, Math.min(startPos.y, p.y));
+    rect.w = Math.abs(p.x - startPos.x);
+    rect.h = Math.abs(p.y - startPos.y);
+    drawBox();
+    updateInputs();
+  });
+  stage.addEventListener('pointerup', function(){ dragging = false; });
+  stage.addEventListener('pointercancel', function(){ dragging = false; });
+
+  [xI,yI,wI,hI].forEach(function(inp){
+    inp.addEventListener('input', updateRectFromInputs);
+  });
+
+  window.addEventListener('resize', drawBox);
+
+  submitBtn.addEventListener('click', function(){
+    clearErr();
+    if (rect.w < 1 || rect.h < 1) {
+      showErr('Kotak belum digambar. Tarik langsung di atas gambar.');
+      return;
+    }
+    var pad = Number(padI.value);
+    if (!Number.isFinite(pad) || pad < 0) {
+      showErr('Padding harus angka 0 atau lebih.');
+      return;
+    }
+    var blurParts = (blurI.value || '').split(':');
+    if (blurParts.length !== 2 || !blurParts.every(function(p){ return /^\d+$/.test(p.trim()); })) {
+      showErr('Format blur harus angka:angka, contoh 8:2.');
+      return;
+    }
+    var payload = {
+      sid: sid,
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      w: Math.round(rect.w),
+      h: Math.round(rect.h),
+      pad: Math.round(pad),
+      blur: blurI.value.trim()
+    };
+    if (tg && tg.sendData) {
+      tg.sendData(JSON.stringify(payload));
+    } else {
+      showErr('Buka ini lewat tombol di bot Telegram, bukan browser biasa.');
+    }
+  });
+})();
+</script>
+</body>
+</html>
