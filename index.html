@@ -24,6 +24,13 @@
     color: var(--tg-theme-hint-color, #999999);
     margin: 0 0 12px;
   }
+  .picker {
+    border: 1.5px dashed var(--tg-theme-hint-color, #cccccc);
+    border-radius: 12px;
+    padding: 24px 16px;
+    text-align: center;
+  }
+  .picker input { width: 100%; }
   .stage {
     position: relative;
     width: 100%;
@@ -94,25 +101,35 @@
 </style>
 </head>
 <body>
-<h2 class="sr-only">Alat pilih area watermark buat video yang kamu upload</h2>
+<h2 class="sr-only">Alat pilih area watermark dari video yang kamu pilih</h2>
 
 <div id="app">
-  <p class="hint">Tarik kotak di atas area watermark, rapikan pakai angka kalau perlu.</p>
-  <div class="stage" id="stage">
-    <img id="frame" alt="" />
-    <div class="box" id="box"></div>
+  <div id="pickWrap" class="picker">
+    <p class="hint" style="margin-bottom:12px;">Pilih video yang sama yang kamu kirim ke bot, buat ambil contoh gambarnya.</p>
+    <input type="file" id="videoFile" accept="video/*">
   </div>
-  <div class="grid">
-    <div class="field"><label for="x">X</label><input type="number" id="x" min="0" value="0"></div>
-    <div class="field"><label for="y">Y</label><input type="number" id="y" min="0" value="0"></div>
-    <div class="field"><label for="w">W</label><input type="number" id="w" min="1" value="0"></div>
-    <div class="field"><label for="h">H</label><input type="number" id="h" min="1" value="0"></div>
-    <div class="field"><label for="pad">Padding</label><input type="number" id="pad" min="0" value="6"></div>
-    <div class="field"><label for="blur">Blur (a:b)</label><input type="text" id="blur" value="8:2"></div>
+
+  <div id="editWrap" style="display:none;">
+    <p class="hint">Tarik kotak di atas area watermark, rapikan pakai angka kalau perlu.</p>
+    <div class="stage" id="stage">
+      <img id="frame" alt="" />
+      <div class="box" id="box"></div>
+    </div>
+    <div class="grid">
+      <div class="field"><label for="x">X</label><input type="number" id="x" min="0" value="0"></div>
+      <div class="field"><label for="y">Y</label><input type="number" id="y" min="0" value="0"></div>
+      <div class="field"><label for="w">W</label><input type="number" id="w" min="1" value="0"></div>
+      <div class="field"><label for="h">H</label><input type="number" id="h" min="1" value="0"></div>
+      <div class="field"><label for="pad">Padding</label><input type="number" id="pad" min="0" value="6"></div>
+      <div class="field"><label for="blur">Blur (a:b)</label><input type="text" id="blur" value="8:2"></div>
+    </div>
+    <p class="err" id="err"></p>
+    <button class="primary" id="submit" disabled>🧹 Hapus Watermark</button>
   </div>
-  <p class="err" id="err"></p>
-  <button class="primary" id="submit" disabled>🧹 Hapus Watermark</button>
 </div>
+
+<video id="hiddenVideo" style="display:none" muted playsinline></video>
+<canvas id="hiddenCanvas" style="display:none"></canvas>
 
 <script>
 (function(){
@@ -120,10 +137,14 @@
   if (tg) { tg.ready(); tg.expand(); }
 
   var params = new URLSearchParams(window.location.search);
-  var imgUrl = params.get('img');
   var sid = params.get('sid');
 
   var app = document.getElementById('app');
+  var pickWrap = document.getElementById('pickWrap');
+  var editWrap = document.getElementById('editWrap');
+  var videoFileInput = document.getElementById('videoFile');
+  var hiddenVideo = document.getElementById('hiddenVideo');
+  var hiddenCanvas = document.getElementById('hiddenCanvas');
   var stage = document.getElementById('stage');
   var frameImg = document.getElementById('frame');
   var boxEl = document.getElementById('box');
@@ -139,24 +160,53 @@
   function showErr(msg){ errEl.textContent = msg; errEl.style.display = 'block'; }
   function clearErr(){ errEl.style.display = 'none'; }
 
-  if (!imgUrl || !sid) {
+  if (!sid) {
     app.innerHTML = '<div class="missing">Sesi tidak valid. Kembali ke chat dan mulai ulang dari bot.</div>';
     return;
   }
-  frameImg.src = imgUrl;
 
   var naturalW = 0, naturalH = 0;
   var rect = {x:0,y:0,w:0,h:0};
   var dragging = false;
   var startPos = null;
 
+  videoFileInput.addEventListener('change', function(e){
+    var file = e.target.files[0];
+    if (!file) return;
+    clearErr();
+    var url = URL.createObjectURL(file);
+    hiddenVideo.src = url;
+  });
+
+  hiddenVideo.addEventListener('loadedmetadata', function(){
+    var d = hiddenVideo.duration;
+    var seekTo = (d && isFinite(d)) ? Math.min(1, d / 4) : 0;
+    try { hiddenVideo.currentTime = seekTo; } catch(e) { /* ignore */ }
+  });
+
+  hiddenVideo.addEventListener('seeked', function(){
+    var w = hiddenVideo.videoWidth, h = hiddenVideo.videoHeight;
+    if (!w || !h) {
+      showErr('Gagal membaca video ini, coba video lain.');
+      return;
+    }
+    hiddenCanvas.width = w;
+    hiddenCanvas.height = h;
+    hiddenCanvas.getContext('2d').drawImage(hiddenVideo, 0, 0, w, h);
+    frameImg.src = hiddenCanvas.toDataURL('image/jpeg', 0.85);
+    pickWrap.style.display = 'none';
+    editWrap.style.display = 'block';
+    try { URL.revokeObjectURL(hiddenVideo.src); } catch(e) { /* ignore */ }
+  });
+
+  hiddenVideo.addEventListener('error', function(){
+    showErr('Gagal memuat video ini, coba video lain.');
+  });
+
   frameImg.onload = function(){
     naturalW = frameImg.naturalWidth;
     naturalH = frameImg.naturalHeight;
     submitBtn.disabled = false;
-  };
-  frameImg.onerror = function(){
-    app.innerHTML = '<div class="missing">Link gambar sudah kadaluarsa. Kembali ke chat dan mulai ulang dari bot.</div>';
   };
 
   function displayScale(){
@@ -260,4 +310,4 @@
 })();
 </script>
 </body>
-</html>
+                                                   </html>
